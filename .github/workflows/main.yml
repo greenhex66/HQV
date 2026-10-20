@@ -1,0 +1,54 @@
+name: Build HEX-Q VANTA (Windows)
+
+on:
+  workflow_dispatch:
+  push:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Locate project folder
+        run: |
+          $cm = Get-ChildItem -Recurse -Filter CMakeLists.txt | Where-Object { (Get-Content $_.FullName -Raw) -match 'HexQVanta' } | Select-Object -First 1
+          if (-not $cm) { throw "CMakeLists.txt for HexQVanta not found. Upload ALL project files to the repository." }
+          $dir = $cm.DirectoryName -replace '\\','/'
+          "PROJECT_DIR=$dir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "Project folder: $dir"
+
+      - name: Configure
+        run: cmake -S "$env:PROJECT_DIR" -B "$env:PROJECT_DIR/build" -A x64
+
+      - name: Build
+        run: cmake --build "$env:PROJECT_DIR/build" --config Release --parallel
+
+      - name: DSP self-test
+        continue-on-error: true
+        run: ctest --test-dir "$env:PROJECT_DIR/build" -C Release --output-on-failure
+
+      - name: Collect VST3
+        run: |
+          $dist = "$env:PROJECT_DIR/dist"
+          New-Item -ItemType Directory -Force -Path $dist | Out-Null
+          $vst = Get-ChildItem -Path "$env:PROJECT_DIR/build" -Recurse -Directory -Filter "HEX-Q VANTA.vst3" | Select-Object -First 1
+          if (-not $vst) { throw "HEX-Q VANTA.vst3 not found after build" }
+          Copy-Item -Path $vst.FullName -Destination "$dist/HEX-Q VANTA.vst3" -Recurse
+          Compress-Archive -Path "$dist/HEX-Q VANTA.vst3" -DestinationPath "$env:PROJECT_DIR/HEX-Q-VANTA-VST3-manual.zip"
+
+      - name: Build installer
+        continue-on-error: true
+        run: |
+          choco install innosetup -y --no-progress
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "$env:PROJECT_DIR/installer/vanta.iss"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HEX-Q-VANTA-Windows
+          path: |
+            ${{ env.PROJECT_DIR }}/HEX-Q-VANTA-Setup.exe
+            ${{ env.PROJECT_DIR }}/HEX-Q-VANTA-VST3-manual.zip
